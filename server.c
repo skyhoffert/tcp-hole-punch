@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 struct args_t {
     char* ip;
@@ -41,14 +42,79 @@ int main(int argc, char* argv[])
 
     struct sockaddr_in my_addr, peer_addr;
     my_addr.sin_family = AF_INET;
-    my_addr.sin_addr.s_addr = inet_addr(args->ip);
+    my_addr.sin_addr.s_addr = INADDR_ANY;
     my_addr.sin_port = htons(args->myport);
+    peer_addr.sin_family = AF_INET;
+    peer_addr.sin_port = htons(args->port);
+
+    if (inet_pton(AF_INET, args->ip, &peer_addr.sin_addr) < 0) {
+        perror("inet_pton.");
+        return 1;
+    }
 
     if (bind(sock, (struct sockaddr*) &my_addr, sizeof(my_addr)) != 0) {
         perror("bind.");
         return 1;
     }
 
+    // First, send a SYN packet using connect with timeout.
+    opt = fcntl(sock, F_GETFL, NULL);
+    if (opt < 0) {
+        perror("fcntl.");
+        return 1;
+    }
+    if (fcntl(sock, F_SETFL, opt | O_NONBLOCK) < 0) {
+        perror("fcntl.");
+        return 1;
+    }
+
+    if (connect(sock, (struct sockaddr*) &peer_addr, sizeof(peer_addr)) < 0) {
+        perror("connect.");
+    }
+
+    int err = 0;
+    socklen_t len = 0;
+    eno = getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &len);
+    while (err != 0) {
+        printf("Not connected yet.\n");
+        if (eno != 0) {
+            perror("getsockopt.");
+            break;
+        }
+        usleep(1000);
+        eno = getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &len);
+    }
+    
+    printf("Connected.\n");
+
+    /*
+    if (fcntl(sock, F_SETFL, opt) < 0) {
+        perror("fcntl.");
+        return 1;
+    }
+    */
+   
+   close(sock);
+
+   // Now that we tried to connect, wait for incoming connection while NAT table has adjusted.
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        fprintf(stderr, "E. Error creating socket.\n");
+        return 1;
+    }
+
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) != 0) {
+        perror("setsockopt.");
+        return 1;
+    }
+
+    if (bind(sock, (struct sockaddr*) &my_addr, sizeof(my_addr)) != 0) {
+        perror("bind.");
+        return 1;
+    }
+
+    // Now, try to listen.
     if (listen(sock, 1) != 0) {
         perror("listen.");
         return 1;
